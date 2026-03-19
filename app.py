@@ -16,11 +16,21 @@ st.set_page_config(
 
 
 def _read_csv_from_zip(zf: zipfile.ZipFile, name: str) -> Optional[pd.DataFrame]:
-    try:
-        with zf.open(name) as f:
-            return pd.read_csv(f)
-    except KeyError:
-        return None
+    # Try exact path first, then a suffix match to support nested zip roots.
+    candidate_names = [name]
+    if name not in zf.namelist():
+        suffix = "/" + name
+        suffix_matches = [n for n in zf.namelist() if n.endswith(suffix) or n.endswith(name)]
+        candidate_names.extend(suffix_matches)
+
+    for candidate in candidate_names:
+        try:
+            with zf.open(candidate) as f:
+                return pd.read_csv(f)
+        except KeyError:
+            continue
+
+    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -54,6 +64,14 @@ def derive_highest_probability_team(pred_df: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
+
+    # Backward compatibility with older notebook export names.
+    rename_map = {
+        "best_outcome_prob": "best_win_prob",
+        "outcome_confidence": "confidence",
+    }
+    out = out.rename(columns={k: v for k, v in rename_map.items() if k in out.columns})
+
     for col in ["Date", "GameWeek", "p_home", "p_draw", "p_away", "best_win_prob"]:
         if col in out.columns:
             if col == "Date":
@@ -75,8 +93,11 @@ def show_overview(pred_df: pd.DataFrame, highest_df: pd.DataFrame, lfs_df: Optio
     c2.metric("Gameweeks", f"{total_gameweeks}")
     c3.metric("Avg best winner probability", f"{avg_best_prob:.1%}" if pd.notna(avg_best_prob) else "N/A")
 
-    st.markdown("Highest-probability team per gameweek")
-    st.dataframe(highest_df, use_container_width=True)
+    if highest_df.empty:
+        st.info("Predictions CSV loaded, but there are currently no upcoming fixtures to display.")
+    else:
+        st.markdown("Highest-probability team per gameweek")
+        st.dataframe(highest_df, use_container_width=True)
 
     if lfs_df is not None and not lfs_df.empty:
         st.markdown("One-team-once LFS pick plan")
@@ -85,6 +106,10 @@ def show_overview(pred_df: pd.DataFrame, highest_df: pd.DataFrame, lfs_df: Optio
 
 def show_gameweek_view(pred_df: pd.DataFrame, highest_df: pd.DataFrame) -> None:
     st.subheader("Gameweek predictions")
+
+    if pred_df.empty:
+        st.info("No upcoming fixtures are available in the current predictions file.")
+        return
 
     gameweeks = sorted([int(gw) for gw in pred_df["GameWeek"].dropna().unique().tolist()])
     if not gameweeks:
@@ -106,6 +131,10 @@ def show_gameweek_view(pred_df: pd.DataFrame, highest_df: pd.DataFrame) -> None:
 
 def show_probability_charts(pred_df: pd.DataFrame, highest_df: pd.DataFrame) -> None:
     st.subheader("Probability charts")
+
+    if pred_df.empty or highest_df.empty:
+        st.info("Charts will appear once upcoming fixtures are available.")
+        return
 
     chart_df = highest_df.copy()
     chart_df["team_win_probability"] = pd.to_numeric(chart_df["team_win_probability"], errors="coerce")
@@ -169,12 +198,13 @@ def show_downloads(pred_df: pd.DataFrame, highest_df: pd.DataFrame, lfs_df: Opti
         mime="text/csv",
     )
 
-    st.download_button(
-        label="Download highest-probability team CSV",
-        data=highest_df.to_csv(index=False).encode("utf-8"),
-        file_name="highest_probability_team_by_gameweek.csv",
-        mime="text/csv",
-    )
+    if not highest_df.empty:
+        st.download_button(
+            label="Download highest-probability team CSV",
+            data=highest_df.to_csv(index=False).encode("utf-8"),
+            file_name="highest_probability_team_by_gameweek.csv",
+            mime="text/csv",
+        )
 
     if lfs_df is not None and not lfs_df.empty:
         st.download_button(
@@ -215,7 +245,7 @@ def main() -> None:
     data = load_artifacts_from_zip_bytes(zip_bytes)
 
     pred_df = data["predictions"]
-    if pred_df is None or pred_df.empty:
+    if pred_df is None:
         st.error(
             "Could not find output/upcoming_predictions_by_gameweek.csv in the zip. "
             "Run the notebook weekly planning cell and regenerate artifacts."
