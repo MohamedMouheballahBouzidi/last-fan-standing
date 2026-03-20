@@ -1,4 +1,5 @@
 import io
+import re
 import zipfile
 from pathlib import Path
 from typing import Dict, Optional
@@ -43,14 +44,21 @@ def _zip_contains_member(zip_path: Path, member_suffix: str) -> bool:
 
 
 def pick_default_artifacts_zip() -> Optional[Path]:
-    # Prefer ZIPs that contain upcoming predictions, then newest by modified time.
+    # Prefer ZIPs that contain upcoming predictions and have the highest numeric suffix,
+    # e.g. "lastfan_artifacts (7).zip" over "lastfan_artifacts (4).zip".
     candidates = sorted(Path(".").glob("lastfan_artifacts*.zip"))
     if not candidates:
         return None
 
     valid = [p for p in candidates if _zip_contains_member(p, "output/upcoming_predictions_by_gameweek.csv")]
     target = valid if valid else candidates
-    return max(target, key=lambda p: p.stat().st_mtime)
+
+    def version_score(path: Path) -> int:
+        m = re.search(r"\((\d+)\)", path.name)
+        return int(m.group(1)) if m else -1
+
+    # Primary: highest explicit version number; secondary: latest modified time.
+    return max(target, key=lambda p: (version_score(p), p.stat().st_mtime))
 
 
 @st.cache_data(show_spinner=False)
