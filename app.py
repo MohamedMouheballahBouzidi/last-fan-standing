@@ -33,6 +33,26 @@ def _read_csv_from_zip(zf: zipfile.ZipFile, name: str) -> Optional[pd.DataFrame]
     return None
 
 
+def _zip_contains_member(zip_path: Path, member_suffix: str) -> bool:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            names = zf.namelist()
+            return any(n == member_suffix or n.endswith("/" + member_suffix) or n.endswith(member_suffix) for n in names)
+    except Exception:
+        return False
+
+
+def pick_default_artifacts_zip() -> Optional[Path]:
+    # Prefer ZIPs that contain upcoming predictions, then newest by modified time.
+    candidates = sorted(Path(".").glob("lastfan_artifacts*.zip"))
+    if not candidates:
+        return None
+
+    valid = [p for p in candidates if _zip_contains_member(p, "output/upcoming_predictions_by_gameweek.csv")]
+    target = valid if valid else candidates
+    return max(target, key=lambda p: p.stat().st_mtime)
+
+
 @st.cache_data(show_spinner=False)
 def load_artifacts_from_zip_bytes(zip_bytes: bytes) -> Dict[str, Optional[pd.DataFrame]]:
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
@@ -222,18 +242,20 @@ def main() -> None:
     st.sidebar.header("Artifacts source")
     uploaded_zip = st.sidebar.file_uploader("Upload latest artifacts zip", type=["zip"])
 
-    default_zip = Path("lastfan_artifacts (4).zip")
+    default_zip = pick_default_artifacts_zip()
     use_default = st.sidebar.checkbox(
         "Use bundled zip from repository",
-        value=default_zip.exists() and uploaded_zip is None,
+        value=(default_zip is not None) and uploaded_zip is None,
     )
 
     zip_bytes: Optional[bytes] = None
 
     if uploaded_zip is not None:
         zip_bytes = uploaded_zip.read()
-    elif use_default and default_zip.exists():
+        st.sidebar.caption(f"Using uploaded ZIP: {uploaded_zip.name}")
+    elif use_default and default_zip is not None and default_zip.exists():
         zip_bytes = default_zip.read_bytes()
+        st.sidebar.caption(f"Using bundled ZIP: {default_zip.name}")
 
     if zip_bytes is None:
         st.info(
