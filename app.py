@@ -82,6 +82,31 @@ def derive_highest_probability_team(pred_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def derive_top3_recommended_teams(pred_df: pd.DataFrame) -> pd.DataFrame:
+    df = pred_df.copy()
+    df["p_home"] = pd.to_numeric(df["p_home"], errors="coerce")
+    df["p_away"] = pd.to_numeric(df["p_away"], errors="coerce")
+
+    home_better = df["p_home"] >= df["p_away"]
+    df["recommended_team"] = df["HomeTeam"].where(home_better, df["AwayTeam"])
+    df["opponent"] = df["AwayTeam"].where(home_better, df["HomeTeam"])
+    df["venue"] = "HOME"
+    df.loc[~home_better, "venue"] = "AWAY"
+    df["team_win_probability"] = df["p_home"].where(home_better, df["p_away"])
+
+    ranked = (
+        df.sort_values(["GameWeek", "team_win_probability"], ascending=[True, False])
+        .groupby("GameWeek", as_index=False)
+        .head(3)
+        .copy()
+    )
+    ranked["rank"] = ranked.groupby("GameWeek").cumcount() + 1
+
+    out = ranked[["GameWeek", "rank", "recommended_team", "opponent", "venue", "team_win_probability"]]
+    out = out.sort_values(["GameWeek", "rank"]).reset_index(drop=True)
+    return out
+
+
 def normalize_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
@@ -101,7 +126,7 @@ def normalize_prediction_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def show_overview(pred_df: pd.DataFrame, highest_df: pd.DataFrame, lfs_df: Optional[pd.DataFrame]) -> None:
+def show_overview(pred_df: pd.DataFrame, top3_df: pd.DataFrame, lfs_df: Optional[pd.DataFrame]) -> None:
     st.subheader("Overview")
 
     total_matches = len(pred_df)
@@ -113,11 +138,11 @@ def show_overview(pred_df: pd.DataFrame, highest_df: pd.DataFrame, lfs_df: Optio
     c2.metric("Gameweeks", f"{total_gameweeks}")
     c3.metric("Avg best winner probability", f"{avg_best_prob:.1%}" if pd.notna(avg_best_prob) else "N/A")
 
-    if highest_df.empty:
+    if top3_df.empty:
         st.info("Predictions CSV loaded, but there are currently no upcoming fixtures to display.")
     else:
-        st.markdown("Highest-probability team per gameweek")
-        st.dataframe(highest_df, use_container_width=True)
+        st.markdown("Top 3 recommended teams per gameweek")
+        st.dataframe(top3_df, use_container_width=True)
 
     if lfs_df is not None and not lfs_df.empty:
         st.markdown("One-team-once LFS pick plan")
@@ -276,6 +301,7 @@ def main() -> None:
 
     pred_df = normalize_prediction_columns(pred_df)
     highest_df = derive_highest_probability_team(pred_df)
+    top3_df = derive_top3_recommended_teams(pred_df)
     lfs_df = data["lfs_plan"]
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
@@ -283,7 +309,7 @@ def main() -> None:
     )
 
     with tab1:
-        show_overview(pred_df, highest_df, lfs_df)
+        show_overview(pred_df, top3_df, lfs_df)
     with tab2:
         show_gameweek_view(pred_df, highest_df)
     with tab3:
